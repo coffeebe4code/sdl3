@@ -7,20 +7,21 @@ pub const version: std.SemanticVersion = .{ .major = 3, .minor = 2, .patch = 22 
 const formatted_version = std.fmt.comptimePrint("SDL3-{f}", .{version});
 pub const vendor_info = "https://github.com/castholm/SDL 0.3.0";
 pub const revision = formatted_version ++ " (" ++ vendor_info ++ ")";
+pub const ZIG_LIBC_CONFIGS_DIR_PATH = "zig-libc-configs";
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const sys_path = b.option(
-        []const u8,
-        "syspath",
-        "Used for an alternate syspath, usually for android builds",
-    ) orelse "";
     const preferred_linkage = b.option(
         std.builtin.LinkMode,
         "preferred_linkage",
         "Prefer building statically or dynamically linked libraries (default: static)",
     ) orelse .static;
+    const android_version = b.option(
+        []const u8,
+        "android_api",
+        "The Android api version",
+    ) orelse "29";
     const strip = b.option(
         bool,
         "strip",
@@ -64,6 +65,7 @@ pub fn build(b: *std.Build) void {
     var library_path: ?std.Build.LazyPath = null;
     var msvc = false; // Assume mingw-w64 as the default for Windows
     var musl = false; // Assume glibc as the default for Linux
+    _ = android_version;
     switch (target.result.os.tag) {
         .windows => {
             windows = true;
@@ -71,9 +73,14 @@ pub fn build(b: *std.Build) void {
         },
         .linux => {
             if (target.result.abi.isAndroid()) {
-                android = true;
-                b.sysroot = sys_path;
-                library_path = .{ .cwd_relative = "/usr/lib" };
+                if (b.sysroot) |sysroot| {
+                    _ = sysroot;
+                    android = true;
+                    library_path = .{ .cwd_relative = "/usr/lib" };
+                } else {
+                    std.log.err("'--sysroot' is required when building SDL for android", .{});
+                    std.process.exit(1);
+                }
             } else {
                 linux = true;
 
@@ -574,6 +581,7 @@ pub fn build(b: *std.Build) void {
         .sanitize_c = sanitize_c,
         .pic = pic,
     });
+
     const sdl_lib = b.addLibrary(.{
         .linkage = if (emscripten) .static else preferred_linkage,
         .name = "SDL3",
@@ -586,6 +594,18 @@ pub fn build(b: *std.Build) void {
         .use_llvm = if (emscripten) true else null,
     });
     sdl_lib.lto = lto;
+
+    if (android) {
+        const make_libc_stdout = genLibCFile(b, sdl_lib, .{
+            .include_dir = .{ .cwd_relative = "usr/include" },
+            .sys_include_dir = .{ .cwd_relative = "usr/include/sys" },
+            .crt_dir = .{ .cwd_relative = "" },
+            .msvc_lib_dir = null,
+            .kernel32_lib_dir = null,
+            .gcc_dir = null,
+        });
+        sdl_lib.setLibCFile(make_libc_stdout);
+    }
 
     sdl_mod.addCMacro("USING_GENERATED_CONFIG_H", "1");
     sdl_mod.addCMacro("SDL_BUILD_MAJOR_VERSION", std.fmt.comptimePrint("{d}", .{version.major}));
@@ -1636,3 +1656,25 @@ const LinuxDepsValues = struct {
         };
     }
 };
+
+const LibcFileOptions = struct {
+    include_dir: ?std.Build.LazyPath,
+    sys_include_dir: ?std.Build.LazyPath,
+    crt_dir: ?std.Build.LazyPath,
+    msvc_lib_dir: ?std.Build.LazyPath,
+    kernel32_lib_dir: ?std.Build.LazyPath,
+    gcc_dir: ?std.Build.LazyPath,
+};
+
+fn genLibCFile(b: *std.Build, c: *std.Build.Step.Compile, libc_file_options: LibcFileOptions) std.Build.LazyPath {
+    const make_libc_file = b.addRunArtifact(c);
+    inline for (@typeInfo(LibcFileOptions).@"struct".fields) |field| {
+        if (@field(libc_file_options, field.name)) |val| {
+            make_libc_file.addPrefixedDirectoryArg(field.name ++ "=", val);
+        } else {
+            make_libc_file.addArg(field.name ++ "=");
+        }
+    }
+    const make_libc_stdout = make_libc_file.captureStdOut(.{});
+    return make_libc_stdout;
+}
