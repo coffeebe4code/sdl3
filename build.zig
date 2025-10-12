@@ -1,11 +1,8 @@
-// © 2024 Carl Åstholm
-// SPDX-License-Identifier: MIT
-
 const std = @import("std");
 
 pub const version: std.SemanticVersion = .{ .major = 3, .minor = 2, .patch = 22 };
 const formatted_version = std.fmt.comptimePrint("SDL3-{f}", .{version});
-pub const vendor_info = "https://github.com/castholm/SDL 0.3.0";
+pub const vendor_info = "https://github.com/coffeebe4code/sdl3";
 pub const revision = formatted_version ++ " (" ++ vendor_info ++ ")";
 pub const ZIG_LIBC_CONFIGS_DIR_PATH = "zig-libc-configs";
 
@@ -596,7 +593,19 @@ pub fn build(b: *std.Build) void {
     sdl_lib.lto = lto;
 
     if (android) {
-        const make_libc_stdout = genLibCFile(b, sdl_lib, .{
+        const make_libc_tool = b.addExecutable(
+            .{ .name = "make_libc", .root_module = b.addModule(
+                "make_libc",
+                .{
+                    .target = target,
+                    .root_source_file = .{
+                        .cwd_relative = "android_libc.zig",
+                    },
+                    .optimize = optimize,
+                },
+            ) },
+        );
+        const make_libc_stdout = genLibCFile(b, make_libc_tool, .{
             .include_dir = .{ .cwd_relative = "usr/include" },
             .sys_include_dir = .{ .cwd_relative = "usr/include/sys" },
             .crt_dir = .{ .cwd_relative = "" },
