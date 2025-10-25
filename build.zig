@@ -1,11 +1,8 @@
-// © 2024 Carl Åstholm
-// SPDX-License-Identifier: MIT
-
 const std = @import("std");
 
 pub const version: std.SemanticVersion = .{ .major = 3, .minor = 2, .patch = 22 };
 const formatted_version = std.fmt.comptimePrint("SDL3-{f}", .{version});
-pub const vendor_info = "https://github.com/castholm/SDL 0.3.0";
+pub const vendor_info = "https://github.com/coffeebe4code/sdl3";
 pub const revision = formatted_version ++ " (" ++ vendor_info ++ ")";
 pub const ZIG_LIBC_CONFIGS_DIR_PATH = "zig-libc-configs";
 
@@ -22,6 +19,11 @@ pub fn build(b: *std.Build) void {
         "android_api",
         "The Android api version",
     ) orelse "29";
+    const libc_path = b.option(
+        []const u8,
+        "libc path",
+        "The LibCPath for Android",
+    ) orelse "";
     const strip = b.option(
         bool,
         "strip",
@@ -573,45 +575,58 @@ pub fn build(b: *std.Build) void {
         "-Wimplicit-fallthrough",
     };
 
-    const sdl_mod = b.createModule(.{
+    const tc = b.addTranslateC(.{
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = b.path("include/SDL3/SDL.h"),
+        .link_libc = true,
+    });
+    tc.addIncludePath(b.path("include/"));
+
+    const c_mod = tc.addModule("sdl3");
+
+    const sdl_mod = b.addModule("sdl3", .{
         .target = target,
         .optimize = optimize,
         .link_libc = true,
         .strip = strip,
         .sanitize_c = sanitize_c,
         .pic = pic,
+        .imports = &.{
+            .{ .name = "c", .module = c_mod },
+        },
     });
 
-    const sdl_lib = b.addLibrary(.{
-        .linkage = if (emscripten) .static else preferred_linkage,
-        .name = "SDL3",
-        .root_module = sdl_mod,
-        .version = .{
-            .major = 0,
-            .minor = version.minor,
-            .patch = version.patch,
-        },
-        .use_llvm = if (emscripten) true else null,
-    });
-    sdl_lib.lto = lto;
+    //const sdl_lib = b.addLibrary(.{
+    //    .linkage = if (emscripten) .static else preferred_linkage,
+    //    .name = "SDL3",
+    //    .root_module = sdl_mod,
+    //    .version = .{
+    //        .major = 0,
+    //        .minor = version.minor,
+    //        .patch = version.patch,
+    //    },
+    //    .use_llvm = if (emscripten) true else null,
+    //});
+    //sdl_lib.lto = lto;
 
     if (android) {
-        const make_libc_stdout = genLibCFile(b, sdl_lib, .{
-            .include_dir = .{ .cwd_relative = "usr/include" },
-            .sys_include_dir = .{ .cwd_relative = "usr/include/sys" },
-            .crt_dir = .{ .cwd_relative = "" },
-            .msvc_lib_dir = null,
-            .kernel32_lib_dir = null,
-            .gcc_dir = null,
-        });
-        sdl_lib.setLibCFile(make_libc_stdout);
+        //const make_libc_stdout = genLibCFile(b,, .{
+        //    .include_dir = .{ .cwd_relative = "usr/include" },
+        //    .sys_include_dir = .{ .cwd_relative = "usr/include/sys" },
+        //    .crt_dir = .{ .cwd_relative = "" },
+        //    .msvc_lib_dir = null,
+        //    .kernel32_lib_dir = null,
+        //    .gcc_dir = null,
+        //});
+        //sdl_mod.addLibCPath(.{ .libc = .{ .cwd_relative = libc_path } });
     }
 
-    sdl_mod.addCMacro("USING_GENERATED_CONFIG_H", "1");
+    c_mod.addCMacro("USING_GENERATED_CONFIG_H", "1");
     sdl_mod.addCMacro("SDL_BUILD_MAJOR_VERSION", std.fmt.comptimePrint("{d}", .{version.major}));
     sdl_mod.addCMacro("SDL_BUILD_MINOR_VERSION", std.fmt.comptimePrint("{d}", .{version.minor}));
     sdl_mod.addCMacro("SDL_BUILD_MICRO_VERSION", std.fmt.comptimePrint("{d}", .{version.patch}));
-    switch (sdl_lib.linkage.?) {
+    switch (sdl_mod.linkage.?) {
         .static => {
             sdl_mod.addCMacro("SDL_STATIC_LIB", "1");
         },
@@ -666,7 +681,7 @@ pub fn build(b: *std.Build) void {
     var sdl_c_flags_buf: [common_c_flags.len + 3][]const u8 = undefined;
     var sdl_c_flags: std.ArrayList([]const u8) = .initBuffer(&sdl_c_flags_buf);
     sdl_c_flags.appendSliceAssumeCapacity(&common_c_flags);
-    if (sdl_lib.linkage.? == .dynamic) {
+    if (sdl_mod.linkage.? == .dynamic) {
         sdl_c_flags.appendAssumeCapacity("-fvisibility=hidden");
     }
     if (linux or android) {
@@ -852,7 +867,7 @@ pub fn build(b: *std.Build) void {
         "src/libm/s_sin.c",
         "src/libm/s_tan.c",
     };
-    switch (sdl_lib.linkage.?) {
+    switch (sdl_mod.linkage.?) {
         .static => {
             sdl_mod.addCSourceFiles(.{
                 .flags = sdl_c_flags.items,
@@ -1100,7 +1115,7 @@ pub fn build(b: *std.Build) void {
                 },
             });
         }
-        if (sdl_lib.linkage.? == .dynamic) {
+        if (sdl_mod.linkage.? == .dynamic) {
             sdl_mod.addWin32ResourceFile(.{ .file = b.path("src/core/windows/version.rc") });
         }
     }
@@ -1443,9 +1458,9 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    if (sdl_lib.linkage.? == .dynamic) {
-        sdl_lib.setVersionScript(b.path("src/dynapi/SDL_dynapi.sym"));
-        sdl_lib.linker_allow_undefined_version = true;
+    if (sdl_mod.linkage.? == .dynamic) {
+        sdl_mod.setVersionScript(b.path("src/dynapi/SDL_dynapi.sym"));
+        sdl_mod.linker_allow_undefined_version = true;
     }
     if (android) {
         sdl_mod.linkSystemLibrary("dl", .{});
@@ -1510,7 +1525,7 @@ pub fn build(b: *std.Build) void {
         sdl_mod.linkFramework("QuartzCore", .{});
     }
 
-    sdl_lib.installHeadersDirectory(b.path("include/SDL3"), "SDL3", .{
+    sdl_mod.installHeadersDirectory(b.path("include/SDL3"), "SDL3", .{
         .exclude_extensions = &.{
             "SDL_revision.h",
             "SDL_test.h",
@@ -1526,12 +1541,12 @@ pub fn build(b: *std.Build) void {
             "SDL_test_memory.h",
         },
     });
-    sdl_lib.installConfigHeader(revision_h);
+    sdl_mod.installConfigHeader(revision_h);
     if (install_build_config_h) {
-        sdl_lib.installConfigHeader(build_config_h);
+        sdl_mod.installConfigHeader(build_config_h);
     }
 
-    const install_sdl_lib = b.addInstallArtifact(sdl_lib, .{});
+    const install_sdl_lib = b.addInstallArtifact(sdl_mod, .{});
 
     const install_sdl = b.step("install_sdl", "Install SDL");
     install_sdl.dependOn(&install_sdl_lib.step);
